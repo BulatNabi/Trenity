@@ -27,7 +27,7 @@ function App() {
   const loadGroups = async () => {
     try {
       setLoading(true);
-      const response = await axios.get(`${API_URL}/api/groups/`);
+      const response = await axios.get(`${API_URL}/groups/`);
       setGroupsBySocial(response.data);
 
       // По умолчанию выбираем все аккаунты
@@ -159,7 +159,7 @@ function App() {
         formData.append('post_text', postText.trim());
       }
 
-      const response = await axios.post(`${API_URL}/api/publish/`, formData, {
+      const response = await axios.post(`${API_URL}/publish/`, formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
