@@ -70,11 +70,11 @@ services:
       dockerfile: Dockerfile
     container_name: trenity_frontend
     ports:
-      - "3000:80"
+      - "80:80"
     depends_on:
       - backend
-    environment:
-      - REACT_APP_API_URL=http://localhost:8000
+    # REACT_APP_API_URL не устанавливаем - будет использован относительный путь /api
+    # Это автоматически работает с тем протоколом, который использует браузер (HTTP/HTTPS)
 
 volumes:
   postgres_data:
