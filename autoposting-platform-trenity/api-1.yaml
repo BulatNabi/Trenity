@@ -1,0 +1,1324 @@
+openapi: 3.1.1
+info:
+  title: SmmBox API
+  version: 1.0.0
+  description: >
+    API SmmBox — это простой способ публиковать посты в подключённые соцсети
+    прямо из вашего сайта, сервиса, бота или no-code инструментов вроде n8n,
+    Zapier, Make и т.д.<br><br> API позволяет получить список всех подключенных
+    к SmmBox соц.страниц, а затем отправлять в них посты автоматически — по
+    кнопке, по событию или по вашему сценарию.
+servers:
+  - url: https://smmbox.com/api/
+tags:
+  - name: Groups
+    description: Методы для работы с группами
+    x-displayName: Группы
+  - name: Posts
+    description: Методы для работы с постами
+    x-displayName: Посты
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Токен авторизации можно получить на странице [Настройки
+        аккаунта](https://smmbox.com/dashboard/auth-settings/)
+  schemas:
+    Error:
+      title: Ошибка
+      x-internal: true
+      x-scalar-ignore: true
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: Код ошибки
+        message:
+          type: string
+          description: Описание ошибки
+        data:
+          description: Дополнительные данные об ошибке
+          nullable: true
+    SuccessResponse:
+      title: Успешный результат
+      x-internal: true
+      type: object
+      required:
+        - success
+        - response
+      properties:
+        success:
+          type: boolean
+          const: true
+        response:
+          description: Результат выполнения запроса
+    ErrorResponse:
+      title: Результат с ошибкой
+      x-internal: true
+      type: object
+      required:
+        - success
+        - error
+      properties:
+        success:
+          type: boolean
+          const: false
+        error:
+          $ref: "#/components/schemas/Error"
+    ShortSocial:
+      description: Двухсимвольное обозначение соцсети
+      x-internal: true
+      type: enum
+      enum:
+        - vk
+        - ok
+        - fb
+        - tg
+        - tw
+        - pi
+        - tr
+        - io
+        - to
+        - gg
+        - ry
+      x-enum-descriptions:
+        vk: ВКонтакте
+        ok: Одноклассники
+        fb: Facebook
+        tg: Telegram
+        tw: X (Twitter)
+        pi: Pinterest
+        tr: Tumblr
+        io: Instagram
+        to: TikTok
+        gg: YouTube
+        ry: RuTube
+    PostOption:
+      x-internal: true
+      description: Настройки публикации
+      type: string
+      enum:
+        - add_watermark
+        - from_group
+        - mark_as_ads
+        - signed
+        - close_comments
+        - stories
+        - reels
+        - disable_notification
+        - disable_page_preview
+        - duet
+        - stitch
+        - no_transform_vk2clip
+        - addition_sign
+      x-enum-descriptions:
+        add_watermark: Наложить водяной знак на изображения
+        from_group: Опубликовать от имени группы
+        mark_as_ads: Рекламный пост
+        signed: Добавить подпись
+        close_comments: Закрыть комментарии
+        stories: Опубликовать в истории
+        reels: Опубликовать в короткие видео
+        disable_notification: Отключить уведомление о публикации
+        disable_page_preview: Отключить генерацию превью по ссылке
+        duet: Разрешить дуэты
+        stitch: Разрешено склеивать
+        no_transform_vk2clip: Не преобразовывать видео ВК в клипы
+        addition_sign: Добавить подпись
+    Group:
+      type: object
+      required:
+        - id
+        - social
+        - type
+      title: Группа
+      description: Группа или публичная страница пользователя
+      properties:
+        id:
+          type:
+            - string
+            - integer
+          description: ID канала или личной страницы в соц.сети
+        social:
+          $ref: "#/components/schemas/ShortSocial"
+        type:
+          type: string
+          enum:
+            - user
+            - group
+            - page
+          description: Тип группы
+    GroupInfo:
+      title: Информация о группе
+      required:
+        - name
+        - photo
+        - index
+      allOf:
+        - $ref: "#/components/schemas/Group"
+        - type: object
+          properties:
+            photo:
+              type: string
+              format: uri
+              description: Аватарка группы
+            name:
+              type: string
+              description: Название группы
+            index:
+              type: integer
+              minvalue: -1
+              description: Порядок для сортировки
+    Attach:
+      title: Вложение
+      x-internal: true
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          description: Тип вложения
+    AttachPhoto:
+      title: Вложение Фото
+      required:
+        - original
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: photo
+            original:
+              type: string
+              format: uri
+              description: Ссылка на изображение
+            preview:
+              type: string
+              format: uri
+              nullable: true
+              description: Ссылка на превью изображения
+            width:
+              type: integer
+              nullable: true
+              minvalue: 1
+              description: Ширина изображения
+            height:
+              type: integer
+              nullable: true
+              minvalue: 1
+              description: Высота изображения
+            caption:
+              type: string
+              nullable: true
+              description: Описание изображения
+            size:
+              type: integer
+              nullable: true
+              minvalue: 1
+              description: Размер файла в байтах
+    AttachSocialPhoto:
+      title: Вложение Фото из соцсети
+      required:
+        - id
+        - social
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: photo
+            original:
+              type: string
+              format: uri
+              nullable: true
+              description: Ссылка на изображение
+            preview:
+              type: string
+              format: uri
+              nullable: true
+              description: Ссылка на превью изображения
+            width:
+              type: integer
+              nullable: true
+              minvalue: 1
+              description: Ширина изображения
+            height:
+              type: integer
+              nullable: true
+              minvalue: 1
+              description: Высота изображения
+            id:
+              type: string
+              description: ID изображения, загруженного в соцсеть
+            social:
+              $ref: "#/components/schemas/ShortSocial"
+              description: Двухсимвольное обозначение соцсети, в которую загружено изображение
+    AttachText:
+      title: Вложение Текст
+      required:
+        - text
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: text
+            text:
+              type: string
+              description: Текст вложения
+            is_html:
+              type: integer
+              nullable: true
+              description: Флаг, содержит текст HTML-разметку
+              minimum: 0
+              maximum: 1
+    AttachYouTubeVideo:
+      title: Вложение YouTube-видео
+      required:
+        - url
+        - social
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: video
+            social:
+              const: youtube
+            url:
+              type: string
+              format: uri
+              description: Ссылка на youtube-видео
+            preview:
+              type: string
+              nullable: true
+              format: uri
+              description: Ссылка на предпросмотр видео
+            custom_preview:
+              type: boolean
+              nullable: true
+              description: Использовать превью при загрузке видео
+            title:
+              type: string
+              nullable: true
+              description: Название видео
+            description:
+              type: string
+              nullable: true
+              description: Описание видео
+            vk_privacy:
+              type: enum
+              enum:
+                - all
+                - members
+                - donut
+              x-enum-descriptions:
+                all: Доступно всем пользователям
+                members: Доступно участникам
+                donut: Доступно по ссылке
+              nullable: true
+              description: Приватность видео в ВКонтакте
+            vk_comment_privacy:
+              type: enum
+              enum:
+                - all
+                - members
+                - nobody
+              x-enum-descriptions:
+                all: Доступно всем пользователям
+                members: Доступно участникам
+                nobody: Недоступно никому
+              nullable: true
+              description: Приватность комментирования видео в ВКонтакте
+    AttachSocialVideo:
+      title: Вложение Видео из соцсети
+      required:
+        - id
+        - social
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: video
+            preview:
+              type: string
+              nullable: true
+              format: uri
+              description: Ссылка на предпросмотр видео
+            title:
+              type: string
+              nullable: true
+              description: Название видео
+            id:
+              type: string
+              nullable: true
+              description: ID видео, загруженного в соцсеть
+            social:
+              $ref: "#/components/schemas/ShortSocial"
+              description: Двухсимвольное обозначение соцсети, в которую загружено видео
+            width:
+              type: integer
+              nullable: true
+              minvalue: 1
+              description: Ширина видео
+            height:
+              type: integer
+              nullable: true
+              minvalue: 1
+              description: Высота видео
+            duration:
+              type: number
+              format:
+                - integer
+                - float
+              nullable: true
+              minvalue: 0
+              description: Продолжительность в секундах
+    AttachVideo:
+      title: Вложение Видео
+      required:
+        - url
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: video
+            url:
+              type: string
+              description: Ссылка на видео-файл
+            preview:
+              type: string
+              nullable: true
+              description: Ссылка на предпросмотр видео
+            custom_preview:
+              type: boolean
+              nullable: true
+              description: Использовать превью при загрузке видео
+            title:
+              type: string
+              nullable: true
+              description: Название видео
+            description:
+              type: string
+              nullable: true
+              description: Описание видео
+            width:
+              type: integer
+              nullable: true
+              minvalue: 1
+              description: Ширина видео
+            height:
+              type: integer
+              nullable: true
+              minvalue: 1
+              description: Высота видео
+            duration:
+              type: number
+              format:
+                - integer
+                - float
+              nullable: true
+              minvalue: 0
+              description: Продолжительность в секундах
+            size:
+              type: integer
+              nullable: true
+              minvalue: 1
+              description: Размер видео в байтах
+            ext:
+              type: string
+              nullable: true
+              description: Расширение видео
+            vk_privacy:
+              type: enum
+              enum:
+                - all
+                - members
+                - donut
+              x-enum-descriptions:
+                all: Доступно всем пользователям
+                members: Доступно участникам
+                donut: Доступно по ссылке
+              nullable: true
+              description: Приватность загруженного видео в ВКонтакте
+            vk_comment_privacy:
+              type: enum
+              enum:
+                - all
+                - members
+                - nobody
+              x-enum-descriptions:
+                all: Доступно всем пользователям
+                members: Доступно участникам
+                nobody: Недоступно никому
+              nullable: true
+              description: Приватность комментирования загруженного видео в ВКонтакте
+            made_for_kids:
+              type: integer
+              nullable: true
+              enum:
+                - 0
+                - 1
+                - -1
+              description: Контент ориентирован для детей
+              x-enum-descriptions:
+                "0": Не указано
+                "1": Да, это видео для детей
+                "-1": Нет, это видео не для детей
+            yt_category_id:
+              type: integer
+              nullable: true
+              description: ID категории YouTube
+            yt_playlists:
+              type: string
+              nullable: true
+              description: Список плейлистов YouTube через запятую, в которые необходимо
+                добавить загруженное видео
+            yt_privacy:
+              type: enum
+              enum:
+                - public
+                - private
+                - unlisted
+              x-enum-descriptions:
+                public: Доступно всем
+                private: Доступно только для меня
+                unlisted: Доступно по ссылке
+              nullable: true
+              description: Приватность загруженного видео в RuTube
+            tags:
+              type: string
+              nullable: true
+              description: Список ключевых слов через запятую для YouTube
+            ry_category_id:
+              type: integer
+              nullable: true
+              description: ID категории RuTube
+            ry_playlists:
+              type: string
+              nullable: true
+              description: Список плейлистов RuTube через запятую, в которые необходимо
+                добавить загруженное видео
+            ry_privacy:
+              type: enum
+              enum:
+                - public
+                - private
+              x-enum-descriptions:
+                public: Для всех
+                private: Только по ссылке
+              nullable: true
+              description: Приватность загруженного видео в RuTube
+            tt_privacy:
+              type: enum
+              enum:
+                - PUBLIC_TO_EVERYONE
+                - MUTUAL_FOLLOW_FRIENDS
+                - FOLLOWER_OF_CREATOR
+                - SELF_ONLY
+              x-enum-descriptions:
+                PUBLIC_TO_EVERYONE: Публичное
+                MUTUAL_FOLLOW_FRIENDS: Только для друзей
+                FOLLOWER_OF_CREATOR: Только для подписчиков
+                SELF_ONLY: Только для меня
+              nullable: true
+              description: Приватность загруженного видео в TikTok
+            tt_brand_content:
+              type: boolean
+              nullable: true
+              description: Брендированный контент для TikTok
+            tt_brand_organic:
+              type: boolean
+              nullable: true
+              description: Видео продвигает ваш бред для TikTok
+    _AttachDoc:
+      title: Вложение Документ (базовые поля)
+      x-internal: true
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: doc
+            url:
+              type: string
+              format: uri
+              description: Ссылка на документ
+            preview:
+              type: string
+              format: uri
+              nullable: true
+              description: Ссылка на превью
+            ext:
+              type: string
+              nullable: true
+              description: Расширение файла
+            filename:
+              type: string
+              nullable: true
+              description: Название файла
+            size:
+              type: integer
+              nullable: true
+              minvalue: 1
+              description: Размер файла в байтах
+    AttachDoc:
+      title: Вложение Документ
+      required:
+        - url
+      allOf:
+        - $ref: "#/components/schemas/_AttachDoc"
+    AttachSocialDoc:
+      title: Вложение Документ из соцсети
+      required:
+        - id
+        - social
+      allOf:
+        - $ref: "#/components/schemas/_AttachDoc"
+        - type: object
+          properties:
+            id:
+              type: string
+              nullable: true
+              description: ID документа, загруженного в соцсеть
+            social:
+              $ref: "#/components/schemas/ShortSocial"
+              description: Двухсимвольное обозначение соцсети, в которую загружен документ
+    AttachAlbum:
+      title: Вложение Альбом ВК
+      required:
+        - id
+        - social
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: album
+            id:
+              type: string
+              nullable: true
+              description: ID альбома ВК
+            social:
+              const: vk
+            preview:
+              type: string
+              format: uri
+              nullable: true
+              description: Ссылка на превью
+            title:
+              type: string
+              nullable: true
+              description: Название альбома
+    AttachAudio:
+      title: Вложение Аудио
+      required:
+        - id
+        - social
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: audio
+            id:
+              type: string
+              description: ID документа, загруженного в соцсеть
+            social:
+              $ref: "#/components/schemas/ShortSocial"
+              description: Двухсимвольное обозначение соцсети, в которую загружен документ
+            author:
+              type: string
+              nullable: true
+              description: Название автора
+            song:
+              type: string
+              nullable: true
+              description: Название песни
+            album:
+              type: string
+              nullable: true
+              description: Название альбома
+            url:
+              type: string
+              format: uri
+              nullable: true
+              description: Ссылка на аудиозапись
+            duration:
+              type: integer
+              nullable: true
+              description: Продолжительность аудиозаписи
+    _AttachPoll:
+      title: Вложение Опрос (базовые поля)
+      x-internal: true
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: poll
+            question:
+              type: string
+              description: Вопрос
+            answers:
+              type: array
+              items:
+                type: string
+              description: Список ответов
+            options:
+              type: array
+              description: Опции опроса
+              items:
+                type: enum
+                enum:
+                  - SingleChoice
+                  - AnonymousVoting
+                  - isMultiple
+                x-enum-descriptions:
+                  SingleChoice: Один доступный выбор
+                  AnonymousVoting: Анонимное голосование
+                  isMultiple: Множественный выбор
+            endDate:
+              type: integer
+              nullable: true
+              description: Дата окончания опроса, Unix Timestamp (МСК)
+            background:
+              type: string
+              nullable: true
+              description: Фон опроса (из ВК)
+    AttachPoll:
+      title: Вложение Опрос
+      required:
+        - question
+        - answers
+      allOf:
+        - $ref: "#/components/schemas/_AttachPoll"
+    AttachSocialPoll:
+      title: Вложение Опрос из соцсети
+      required:
+        - id
+        - social
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            id:
+              type: string
+              nullable: true
+              description: ID опроса из соцсети
+            social:
+              $ref: "#/components/schemas/ShortSocial"
+              description: Двухсимвольное обозначение соцсети
+    AttachLink:
+      title: Вложение Ссылка
+      required:
+        - url
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: link
+            url:
+              type: string
+              format: uri
+              description: Ссылка
+    AttachPage:
+      title: Вложение Wiki-страница ВК
+      required:
+        - url
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: page
+            url:
+              type: string
+              format: uri
+              description: Ссылка на страницу
+            title:
+              type: string
+              nullable: true
+              description: Название страницы
+    AttachArticle:
+      title: Вложение Статья ВК
+      required:
+        - url
+        - social
+        - id
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: article
+            social:
+              const: vk
+              description: Соцсеть статьи
+            id:
+              type: string
+              description: ID статьи в соцсети
+            title:
+              type: string
+              nullable: true
+              description: Название статьи
+            url:
+              type: string
+              format: uri
+              description: Ссылка на статью
+    _AttachPoint:
+      title: Вложение ГеоМетка (базовые поля)
+      x-internal: true
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: point
+            lat:
+              type: number
+              format: float
+              description: Широта
+            lng:
+              type: number
+              format: float
+              description: Долгота
+            name:
+              type: string
+              description: Название метки
+            category:
+              type: string
+              description: Категория метки соцсети
+              nullable: true
+            preview:
+              type: string
+              format: uri
+              nullable: true
+              description: Изображение, связанное с местом
+    AttachPoint:
+      title: Вложение ГеоМетка
+      required:
+        - lat
+        - lng
+        - name
+      allOf:
+        - $ref: "#/components/schemas/_AttachPoint"
+    AttachSocialPoint:
+      title: Вложение ГеоМетка соцсети
+      required:
+        - id
+        - social
+      allOf:
+        - $ref: "#/components/schemas/_AttachPoint"
+        - type: object
+          properties:
+            id:
+              type: string
+              description: ID метки в соцсети
+            social:
+              $ref: "#/components/schemas/ShortSocial"
+              description: Соцсеть метки
+    AttachPlaylist:
+      title: Вложение Плейлист ВК
+      required:
+        - id
+        - social
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: audio_playlist
+            social:
+              const: vk
+              description: Соцсеть плейлиста
+            id:
+              type: string
+              description: ID плейлиста соцсети
+            title:
+              type: string
+              nullable: true
+              description: Название
+            url:
+              type: string
+              format: uri
+              nullable: true
+              description: Ссылка на плейлист
+            description:
+              type: string
+              nullable: true
+              description: Описание плейлиста
+    AttachMarket:
+      title: Вложение Товар ВК
+      required:
+        - id
+        - social
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: market
+            social:
+              const: vk
+              description: Соцсеть товара
+            id:
+              type: string
+              description: ID товара соцсети
+            title:
+              type: string
+              nullable: true
+              description: Название
+    AttachComment:
+      title: Вложение Комментарий
+      required:
+        - text
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: comment
+            text:
+              type: string
+              description: Текст комментария
+            from_group:
+              type: integer
+              minvalue: 0
+              maxvalue: 1
+              nullable: true
+              description: Публиковать от имени группы
+    AttachImageComment:
+      title: Вложение Комментарий изображение
+      required:
+        - original
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: image_comment
+            original:
+              type: string
+              format: uri
+              description: Ссылка на изображение
+            preview:
+              type: string
+              format: uri
+              nullable: true
+              description: Ссылка на превью изображения
+            width:
+              type: integer
+              nullable: true
+              minvalue: 1
+              description: Ширина изображения
+            height:
+              type: integer
+              nullable: true
+              minvalue: 1
+              description: Высота изображения
+            caption:
+              type: string
+              nullable: true
+              description: Описание изображения
+            size:
+              type: integer
+              nullable: true
+              minvalue: 1
+              description: Размер файла в байтах
+    AttachSocialImageComment:
+      title: Вложение Комментарий изображение из соцсети
+      required:
+        - id
+        - social
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: image_comment
+            original:
+              type: string
+              format: uri
+              nullable: true
+              description: Ссылка на изображение
+            preview:
+              type: string
+              format: uri
+              nullable: true
+              description: Ссылка на превью изображения
+            width:
+              type: integer
+              nullable: true
+              minvalue: 1
+              description: Ширина изображения
+            height:
+              type: integer
+              nullable: true
+              minvalue: 1
+              description: Высота изображения
+            id:
+              type: string
+              description: ID изображения, загруженного в соцсеть
+            social:
+              $ref: "#/components/schemas/ShortSocial"
+              description: Двухсимвольное обозначение соцсети, в которую загружено изображение
+    AttachRepost:
+      title: Вложение Репост
+      required:
+        - social
+        - url
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: repost
+            social:
+              $ref: "#/components/schemas/ShortSocial"
+              description: Двухсимвольное обозначение соцсети
+            url:
+              type: string
+              format: uri
+              description: Ссылка на объект, на который делается репост
+    AttachTelegramRepost:
+      title: Вложение Репост Telegram
+      required:
+        - social
+        - channel
+        - message_id
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: repost
+            social:
+              const: tg
+              description: Двухсимвольное обозначение соцсети
+            channel:
+              type: string
+              description: ID канала
+            message_id:
+              type: string
+              description: ID сообщения в канале
+    AttachCopyright:
+      title: Вложение Источник
+      required:
+        - link
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: copyright
+            link:
+              type: string
+              description: Ссылка на источник
+    AttachTitle:
+      title: Вложение Заголовок
+      required:
+        - text
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: title
+            text:
+              type: string
+              description: Текст заголовка
+    AttachBtnLink:
+      title: Вложение Кнопка-ссылка
+      required:
+        - text
+        - link
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: btn_link
+            link:
+              type: string
+              description: Ссылка
+            text:
+              type: string
+              description: Текст ссылки
+    AttachBtnVkStories:
+      title: Вложение Кнопка для истории ВК
+      required:
+        - link
+        - text
+      allOf:
+        - $ref: "#/components/schemas/Attach"
+        - type: object
+          properties:
+            type:
+              const: btn_vk_stories
+            link:
+              type: string
+              description: Ссылка
+            text:
+              type: enum
+              enum:
+                - to_store
+                - vote
+                - more
+                - book
+                - order
+                - enroll
+                - fill
+                - signup
+                - buy
+                - ticket
+                - write
+                - open
+                - learn_more
+                - view
+                - go_to
+                - contact
+                - watch
+                - play
+                - install
+                - read
+              x-enum-descriptions:
+                to_store: В магазин
+                vote: Голосовать
+                more: Ещё
+                book: Забронировать
+                order: Заказать
+                enroll: Записаться
+                fill: Заполнить
+                signup: Зарегистрироваться
+                buy: Купить
+                ticket: Купить билет
+                write: Написать
+                open: Открыть
+                learn_more: Подробнее
+                view: Посмотреть
+                go_to: Перейти
+                contact: Связаться
+                watch: Смотреть
+                play: Слушать
+                install: Установить
+                read: Читать
+              description: Текст ссылки
+    Attachments:
+      title: Список вложений
+      x-internal: true
+      type: array
+      description: Список вложений
+      items:
+        anyOf:
+          - $ref: "#/components/schemas/AttachText"
+          - $ref: "#/components/schemas/AttachPhoto"
+          - $ref: "#/components/schemas/AttachSocialPhoto"
+          - $ref: "#/components/schemas/AttachVideo"
+          - $ref: "#/components/schemas/AttachYouTubeVideo"
+          - $ref: "#/components/schemas/AttachDoc"
+          - $ref: "#/components/schemas/AttachSocialDoc"
+          - $ref: "#/components/schemas/AttachAlbum"
+          - $ref: "#/components/schemas/AttachAudio"
+          - $ref: "#/components/schemas/AttachPoll"
+          - $ref: "#/components/schemas/AttachSocialPoll"
+          - $ref: "#/components/schemas/AttachArticle"
+          - $ref: "#/components/schemas/AttachPoint"
+          - $ref: "#/components/schemas/AttachSocialPoint"
+          - $ref: "#/components/schemas/AttachPlaylist"
+          - $ref: "#/components/schemas/AttachMarket"
+          - $ref: "#/components/schemas/AttachComment"
+          - $ref: "#/components/schemas/AttachImageComment"
+          - $ref: "#/components/schemas/AttachSocialImageComment"
+          - $ref: "#/components/schemas/AttachRepost"
+          - $ref: "#/components/schemas/AttachTelegramRepost"
+          - $ref: "#/components/schemas/AttachCopyright"
+          - $ref: "#/components/schemas/AttachTitle"
+          - $ref: "#/components/schemas/AttachBtnLink"
+          - $ref: "#/components/schemas/AttachBtnVkStories"
+    Post:
+      title: Пост
+      type: object
+      required:
+        - group
+        - attachments
+      properties:
+        id:
+          type: integer
+          nullable: true
+          description: ID запланированного поста
+        date:
+          type: integer
+          nullable: true
+          description: Дата публикации поста в формате unix timestamp (МСК)
+        group:
+          $ref: "#/components/schemas/Group"
+          description: Группа, в которой запланирован пост
+        attachments:
+          $ref: "#/components/schemas/Attachments"
+          description: Список вложений поста
+        collection_id:
+          type: integer
+          nullable: true
+          description: ID набора
+          x-internal: true
+        autodelete:
+          type: object
+          nullable: true
+          description: Настройки автоудаления
+          required:
+            - hours
+            - minutes
+          properties:
+            hours:
+              type: integer
+              minvalue: 0
+              maxvalue: 720
+              description: Количество часов
+            minutes:
+              type: integer
+              minvalue: 0
+              maxvalue: 59
+              description: Количество минут
+        autopin:
+          type: integer
+          nullable: true
+          description: Закрепить пост на указанное количество минут
+          minvalue: 0
+        repeat_interval:
+          type: integer
+          nullable: true
+          description: Интервал автоповтора в минутах
+          minvalue: 0
+        repeat_options:
+          type: object
+          nullable: true
+          description: Настойки автоповтора
+          properties:
+            times:
+              type: integer
+              nullable: true
+              description: Количество автоповторов
+            date_end:
+              type: integer
+              nullable: true
+              description: Дата окончания автоповторов в Unix Timestamp (МСК)
+        properties:
+          type: object
+          description: Настройки публикации
+          nullable: true
+          properties:
+            posting_mode:
+              type: enum
+              enum:
+                - grid
+                - carousel
+              x-enum-descriptions:
+                grid: Сетка
+                carousel: Карусель
+        options:
+          type: array
+          description: Настройки публикации
+          nullable: true
+          items:
+            $ref: "#/components/schemas/PostOption"
+  responses:
+    UnauthorizedError:
+      description: Пользователь не авторизован
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+security:
+  - BearerAuth: []
+paths:
+  /v1/groups:
+    get:
+      tags:
+        - Groups
+      summary: Получение списка групп пользователя
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Список групп
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - title: Успешный результат
+                    allOf:
+                      - $ref: "#/components/schemas/SuccessResponse"
+                      - type: object
+                        properties:
+                          response:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/GroupInfo"
+                  - $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+  /v1/posts/postpone:
+    post:
+      tags:
+        - Posts
+      summary: Планирование постов
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - posts
+              properties:
+                posts:
+                  type: array
+                  items:
+                    allOf:
+                      - $ref: "#/components/schemas/Post"
+                      - type: object
+                        required:
+                          - date
+                        properties:
+                          id:
+                            readOnly: true
+                          group:
+                            $ref: "#/components/schemas/Group"
+      responses:
+        "200":
+          description: Список запланированных постов
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - title: Успешный результат
+                    allOf:
+                      - $ref: "#/components/schemas/SuccessResponse"
+                      - type: object
+                        properties:
+                          response:
+                            type: object
+                            properties:
+                              posts:
+                                type: array
+                                items:
+                                  $ref: "#/components/schemas/Post"
+                              links:
+                                type: array
+                                items:
+                                  type: string
+                  - $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
