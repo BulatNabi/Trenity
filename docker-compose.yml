@@ -20,8 +20,8 @@ services:
 
   backend:
     build:
-      context: ./autoposting-platform-trenity
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./autoposting-platform-trenity/Dockerfile
     container_name: trenity_backend
     env_file:
       - .env # Явно указываем .env файл из корня проекта
@@ -36,6 +36,9 @@ services:
       UNIQ_API_URL: ${UNIQ_API_URL:-https://uniq.down-web.ru/}
       DATA_FOLDER: data
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # NVIDIA GPU переменные
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
     volumes:
       - ./autoposting-platform-trenity/data:/app/data
       - ./autoposting-platform-trenity/logs:/app/logs
@@ -44,6 +47,15 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # GPU-ускорение для уникализации видео (обязательно)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+    runtime: nvidia
     command: >
       sh -c "
         echo 'Waiting for database...' &&

@@ -1,268 +1,332 @@
-import httpx
-import zipfile
 import os
 import tempfile
 import uuid
-from typing import List
-from app.config import settings
+import asyncio
+import sys
+import subprocess
+from pathlib import Path
+from typing import List, Optional
 from app.logger import service_logger as logger
+
+# Добавляем путь к trenity-uniqalize-system для импорта video_uniqueizer
+# Пробуем несколько возможных путей (для локальной разработки и Docker)
+possible_paths = [
+    # Путь в Docker контейнере
+    Path("/app/trenity-uniqalize-system"),
+    # Путь для локальной разработки (относительно корня проекта)
+    Path(__file__).parent.parent.parent.parent / "trenity-uniqalize-system",
+]
+
+# Добавляем альтернативные пути в зависимости от текущей директории
+cwd = Path.cwd()
+if cwd.name == "autoposting-platform-trenity":
+    possible_paths.append(cwd.parent / "trenity-uniqalize-system")
+else:
+    possible_paths.append(cwd / "trenity-uniqalize-system")
+
+uniqalize_system_path = None
+for path in possible_paths:
+    if path.exists() and (path / "video_uniqueizer.py").exists():
+        uniqalize_system_path = path
+        break
+
+if uniqalize_system_path is None:
+    # Используем базовый logging, так как logger может быть еще не инициализирован
+    import logging
+    import_logger = logging.getLogger("autoposting.uniq_service")
+    import_logger.error("Не удалось найти trenity-uniqalize-system!")
+    import_logger.error(f"Проверенные пути: {[str(p) for p in possible_paths]}")
+    raise ImportError("Не удалось найти trenity-uniqalize-system. Убедитесь, что папка существует.")
+
+if str(uniqalize_system_path) not in sys.path:
+    sys.path.insert(0, str(uniqalize_system_path))
+
+try:
+    from video_uniqueizer import (
+        process_video,
+        detect_gpu_acceleration,
+        check_ffmpeg,
+        get_video_resolution
+    )
+except ImportError as e:
+    # Используем базовый logging, так как logger может быть еще не инициализирован
+    import logging
+    import_logger = logging.getLogger("autoposting.uniq_service")
+    import_logger.error(f"Не удалось импортировать video_uniqueizer: {e}")
+    import_logger.error(f"Путь к trenity-uniqalize-system: {uniqalize_system_path}")
+    import_logger.error(f"Абсолютный путь существует: {uniqalize_system_path.exists()}")
+    raise
 
 
 class UniquizationService:
     def __init__(self):
-        self.api_url = settings.uniq_api_url
+        # Проверяем FFmpeg при инициализации
+        if not check_ffmpeg():
+            raise RuntimeError("FFmpeg не найден в системе! Установите FFmpeg и добавьте его в PATH")
+        
+        logger.info("=" * 80)
+        logger.info("ИНИЦИАЛИЗАЦИЯ УНИКАЛИЗАТОРА С GPU ПОДДЕРЖКОЙ")
+        logger.info("=" * 80)
+        
+        # Детальная проверка окружения
+        is_docker = os.path.exists('/.dockerenv')
+        logger.info(f"Окружение: {'Docker контейнер' if is_docker else 'Локальная система'}")
+        
+        # Проверка NVIDIA переменных окружения
+        nvidia_vars = {
+            'NVIDIA_VISIBLE_DEVICES': os.environ.get('NVIDIA_VISIBLE_DEVICES'),
+            'NVIDIA_DRIVER_CAPABILITIES': os.environ.get('NVIDIA_DRIVER_CAPABILITIES'),
+            'CUDA_VISIBLE_DEVICES': os.environ.get('CUDA_VISIBLE_DEVICES'),
+        }
+        logger.info("NVIDIA переменные окружения:")
+        for key, value in nvidia_vars.items():
+            logger.info(f"  {key}: {value if value else 'НЕ УСТАНОВЛЕНО'}")
+        
+        # Проверка nvidia-smi
+        has_nvidia_smi = False
+        nvidia_smi_output = None
+        try:
+            result = subprocess.run(
+                ['nvidia-smi', '--query-gpu=name,driver_version,memory.total', '--format=csv,noheader'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                has_nvidia_smi = True
+                nvidia_smi_output = result.stdout.strip()
+                logger.info(f"nvidia-smi доступен:")
+                logger.info(f"  {nvidia_smi_output}")
+            else:
+                logger.warning(f"nvidia-smi вернул код ошибки: {result.returncode}")
+                logger.warning(f"  stderr: {result.stderr[:500]}")
+        except FileNotFoundError:
+            logger.warning("nvidia-smi не найден в PATH")
+        except subprocess.TimeoutExpired:
+            logger.warning("nvidia-smi не отвечает (таймаут)")
+        except Exception as e:
+            logger.warning(f"Ошибка при проверке nvidia-smi: {str(e)}")
+        
+        # Проверка доступности nvidia-smi через путь
+        nvidia_smi_paths = ['/usr/bin/nvidia-smi', '/usr/local/bin/nvidia-smi']
+        nvidia_smi_found = any(os.path.exists(path) for path in nvidia_smi_paths)
+        logger.info(f"nvidia-smi в стандартных путях: {'Найден' if nvidia_smi_found else 'Не найден'}")
+        
+        # Определяем GPU-ускорение один раз при инициализации
+        logger.info("Определение GPU-ускорения через FFmpeg...")
+        self.gpu_config = detect_gpu_acceleration()
+        
+        if self.gpu_config:
+            logger.info(f"✓ GPU кодек обнаружен FFmpeg:")
+            logger.info(f"  Тип: {self.gpu_config['type'].upper()}")
+            logger.info(f"  Кодек: {self.gpu_config['encoder']}")
+            logger.info(f"  Hardware acceleration: {self.gpu_config.get('hwaccel', 'N/A')}")
+        else:
+            logger.error("✗ GPU кодек НЕ обнаружен в FFmpeg!")
+            logger.error("  Проверьте, что FFmpeg скомпилирован с поддержкой GPU")
+        
+        # Проверка доступности GPU
+        has_nvidia_runtime = has_nvidia_smi or os.environ.get('NVIDIA_VISIBLE_DEVICES') is not None
+        
+        if is_docker:
+            if not has_nvidia_runtime:
+                logger.error("=" * 80)
+                logger.error("КРИТИЧЕСКАЯ ОШИБКА: Docker контейнер без GPU доступа!")
+                logger.error("=" * 80)
+                logger.error("Требуется:")
+                logger.error("  1. Установить nvidia-container-toolkit на хосте")
+                logger.error("  2. Раскомментировать GPU настройки в docker-compose.yml")
+                logger.error("  3. Перезапустить Docker daemon")
+                logger.error("=" * 80)
+                raise RuntimeError("GPU недоступен в Docker контейнере! Настройте nvidia-container-runtime.")
+            else:
+                logger.info("✓ NVIDIA runtime обнаружен в Docker")
+        
+        if not self.gpu_config:
+            logger.error("=" * 80)
+            logger.error("КРИТИЧЕСКАЯ ОШИБКА: GPU кодек не найден!")
+            logger.error("=" * 80)
+            logger.error("Проверьте:")
+            logger.error("  1. FFmpeg скомпилирован с поддержкой GPU (h264_nvenc, h264_qsv и т.д.)")
+            logger.error("  2. Драйверы GPU установлены")
+            logger.error("  3. GPU доступен в системе")
+            logger.error("=" * 80)
+            raise RuntimeError("GPU кодек не найден! Уникализация требует GPU.")
+        
+        logger.info("=" * 80)
+        logger.info(f"✓ УНИКАЛИЗАТОР ГОТОВ К РАБОТЕ С GPU: {self.gpu_config['type'].upper()}")
+        logger.info("=" * 80)
 
     async def uniquize_video(self, video_path: str, copies: int = 3) -> List[str]:
         """
-        Отправляет видео на уникализацию и возвращает список путей к уникализированным видео
-
-        Процесс в два этапа:
-        1. POST запрос - отправка видео, получение jobId и token
-        2. GET запрос - скачивание готового ZIP файла по jobId и token
-        3. Разархивирование ZIP и извлечение видео файлов
+        Обрабатывает видео локально с помощью video_uniqueizer и возвращает список путей к уникализированным видео
+        
+        Args:
+            video_path: Путь к исходному видео файлу
+            copies: Количество уникализированных копий для создания
+            
+        Returns:
+            Список путей к уникализированным видео файлам
         """
-        if copies > 3:
-            copies = 3
+        if not os.path.exists(video_path):
+            raise FileNotFoundError(f"Видео файл не найден: {video_path}")
+        
+        if copies < 1:
+            copies = 1
+        
+        logger.info(f"Начало локальной уникализации: {video_path}, copies={copies}")
 
         video_files = []
-
+        input_path = Path(video_path)
+        
+        # Определяем расширение исходного файла
+        file_ext = input_path.suffix or '.mp4'
+        
+        # Создаем временную директорию для выходных файлов
+        extract_dir = tempfile.mkdtemp()
+        logger.debug(f"Временная директория для уникализированных видео: {extract_dir}")
+        
         try:
-            async with httpx.AsyncClient(timeout=1800.0) as client:
-                # Читаем файл
-                with open(video_path, 'rb') as f:
-                    file_content = f.read()
-                    file_name = os.path.basename(video_path)
-
-                # Определяем content type по расширению
-                content_type = 'video/mp4'
-                if file_name.endswith('.avi'):
-                    content_type = 'video/x-msvideo'
-                elif file_name.endswith('.mov'):
-                    content_type = 'video/quicktime'
-                elif file_name.endswith('.mkv'):
-                    content_type = 'video/x-matroska'
-
-                # Формируем multipart/form-data
-                files = {
-                    'files[]': (file_name, file_content, content_type)
-                }
-                data = {
-                    'intent': 'upload',
-                    'copies': copies
-                }
-
-                logger.info(
-                    f"Отправка запроса на уникализацию: {self.api_url}, copies={copies}")
-                response = await client.post(
-                    self.api_url,
-                    files=files,
-                    data=data
-                )
-                content_type = response.headers.get('content-type', '').lower()
-                logger.debug(
-                    f"Ответ API уникализации: статус {response.status_code}, Content-Type: {content_type}, размер: {len(response.content)} байт")
-                response.raise_for_status()
-
-                # Проверяем, что ответ действительно ZIP файл
-                # ZIP файлы начинаются с сигнатуры PK (0x504B)
-                is_zip = response.content.startswith(
-                    b'PK') or 'zip' in content_type
-
-                # API возвращает JSON с jobId и token, а не ZIP напрямую
-                json_response = response.json()
-                logger.info(f"Получен ответ от API: {json_response}")
-
-                # Извлекаем необходимые данные для скачивания
-                job_id = json_response.get('jobId')
-                token = json_response.get('token')
-                status = json_response.get('status', 'unknown')
-                file_count = json_response.get('fileCount', 0)
-
-                if not job_id or not token:
-                    error_msg = f"Не получены jobId или token из ответа API: {json_response}"
-                    logger.error(error_msg)
-                    raise Exception(error_msg)
-
-                if status != 'completed':
-                    logger.warning(
-                        f"Статус обработки: {status}, ожидалось 'completed'")
-                    # Возможно нужно подождать, но продолжаем попытку скачивания
-
-                logger.info(
-                    f"jobId: {job_id}, token: {token}, fileCount: {file_count}")
-
-                # Проверяем warnings
-                warnings = json_response.get('warnings', [])
-                if warnings:
-                    logger.warning(f"Предупреждения от API: {warnings}")
-
-                # Этап 2: Скачивание готового файла (ZIP или MP4)
-                download_url = f"{self.api_url}?download={job_id}&token={token}"
-                logger.info(f"Этап 2: Скачивание файла: {download_url}")
-
-                download_response = await client.get(download_url)
-                download_response.raise_for_status()
-
-                download_content_type = download_response.headers.get(
-                    'content-type', '').lower()
-                content_size = len(download_response.content)
-                logger.info(
-                    f"Ответ скачивания: статус {download_response.status_code}, Content-Type: {download_content_type}, размер: {content_size} байт")
-
-                # Проверяем сигнатуру файла для определения типа
-                is_zip_file = False
-                is_mp4_file = False
-
-                if content_size >= 4:
-                    first_bytes = download_response.content[:2]
-                    # ZIP файлы начинаются с PK (0x504B)
-                    is_zip_signature = first_bytes == b'PK'
-
-                    # MP4 файлы имеют структуру: [размер][тип]
-                    # Обычно на позиции 4-8 находится "ftyp" (file type box)
-                    # Также могут быть другие атомы: moov, mdat, free и т.д.
-                    is_mp4_signature = False
-                    if content_size >= 8:
-                        # Проверяем атомы MP4 (обычно начинаются с размера, затем тип)
-                        atoms = [download_response.content[4:8],
-                                 download_response.content[8:12]]
-                        mp4_atoms = [b'ftyp', b'moov',
-                                     b'mdat', b'free', b'skip', b'wide']
-                        is_mp4_signature = any(
-                            atom in mp4_atoms for atom in atoms)
-
-                    logger.debug(
-                        f"Сигнатура файла: первые 2 байта={first_bytes.hex()}, "
-                        f"байты 4-8={download_response.content[4:8] if content_size >= 8 else 'N/A'} "
-                        f"({'PK - ZIP' if is_zip_signature else 'MP4' if is_mp4_signature else 'неизвестно'})")
-                else:
-                    is_zip_signature = False
-                    is_mp4_signature = False
-                    logger.error("Файл слишком маленький")
-
-                # Определяем тип файла по сигнатуре и Content-Type
-                is_zip_file = is_zip_signature or 'zip' in download_content_type
-                is_mp4_file = (is_mp4_signature or 'video' in download_content_type or
-                               download_content_type in ['video/mp4', 'application/octet-stream']) and not is_zip_file
-
-                # Если не удалось определить по сигнатуре, проверяем Content-Type и количество копий
-                if not is_zip_file and not is_mp4_file:
-                    if copies == 1:
-                        # Если запрошена одна копия, скорее всего это MP4
-                        is_mp4_file = True
-                        logger.info(
-                            "Не удалось определить тип по сигнатуре, но copies=1, предполагаем MP4")
+            # Обрабатываем каждую копию (обязательно с GPU)
+            for i in range(copies):
+                # Генерируем уникальное имя для выходного файла
+                output_filename = f"unique_video_{uuid.uuid4()}{file_ext}"
+                output_path = Path(extract_dir) / output_filename
+                
+                logger.info("=" * 80)
+                logger.info(f"ОБРАБОТКА КОПИИ {i+1}/{copies}: {output_filename}")
+                logger.info(f"Исходный файл: {video_path}")
+                logger.info(f"Выходной файл: {output_path}")
+                logger.info(f"GPU конфигурация: {self.gpu_config['type'].upper()} ({self.gpu_config['encoder']})")
+                logger.info("=" * 80)
+                
+                # Запускаем обработку видео в отдельном потоке (так как process_video синхронная)
+                try:
+                    success, error_msg = await asyncio.to_thread(
+                        process_video,
+                        input_path,
+                        output_path,
+                        i + 1,
+                        copies,
+                        self.gpu_config
+                    )
+                    
+                    if success and output_path.exists():
+                        file_size = output_path.stat().st_size / (1024 * 1024)  # MB
+                        video_files.append(str(output_path))
+                        logger.info("=" * 80)
+                        logger.info(f"✓ КОПИЯ {i+1} УСПЕШНО ОБРАБОТАНА")
+                        logger.info(f"  Размер: {file_size:.2f} MB")
+                        logger.info(f"  Путь: {output_path}")
+                        logger.info("=" * 80)
                     else:
-                        # Если несколько копий, скорее всего это ZIP
-                        is_zip_file = True
-                        logger.info(
-                            "Не удалось определить тип по сигнатуре, но copies>1, предполагаем ZIP")
-
-                if not is_zip_file and not is_mp4_file:
-                    # Пытаемся понять, что это за файл
-                    try:
-                        error_json = download_response.json()
-                        logger.error(
-                            f"API вернул JSON вместо файла: {error_json}")
-                        raise Exception(
-                            f"API вернул ошибку при скачивании: {error_json}")
-                    except ValueError:
-                        preview = download_response.content[:500].decode(
-                            'utf-8', errors='ignore') if len(download_response.content) > 0 else "пустой ответ"
-                        logger.error(
-                            f"Не удалось определить тип файла. Первые 500 символов: {preview}")
-                        raise Exception(
-                            f"Не удалось определить тип скачанного файла. Content-Type: {download_content_type}, размер: {content_size} байт")
-
-                # Обрабатываем файл в зависимости от типа
-                if is_mp4_file:
-                    # Это MP4 файл (одно видео) - сохраняем напрямую
-                    logger.info(
-                        "Обнаружен MP4 файл (одно видео), сохраняем напрямую")
-                    extract_dir = tempfile.mkdtemp()
-                    video_file_path = os.path.join(
-                        extract_dir, f"unique_video_{uuid.uuid4()}.mp4")
-
-                    with open(video_file_path, 'wb') as f:
-                        f.write(download_response.content)
-
-                    video_files.append(video_file_path)
-                    logger.info(f"Сохранено одно видео: {video_file_path}")
-
-                elif is_zip_file:
-                    # Это ZIP файл (несколько видео) - распаковываем
-                    logger.info(
-                        "Обнаружен ZIP файл (несколько видео), распаковываем")
-
-                    # Сохраняем zip файл во временную директорию
-                    logger.debug("Сохранение zip файла")
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_zip:
-                        tmp_zip.write(download_response.content)
-                        tmp_zip_path = tmp_zip.name
-
-                    # Извлекаем видео из zip
-                    extract_dir = tempfile.mkdtemp()
-                    logger.debug(f"Извлечение архива в {extract_dir}")
-                    try:
-                        # Проверяем, что файл действительно ZIP перед открытием
-                        with zipfile.ZipFile(tmp_zip_path, 'r') as zip_ref:
-                            # Получаем список файлов в архиве
-                            file_list = zip_ref.namelist()
-                            logger.info(f"Файлов в архиве: {len(file_list)}")
-                            if file_list:
-                                logger.debug(
-                                    f"Первые файлы в архиве: {file_list[:5]}")
-                            zip_ref.extractall(extract_dir)
-                    except zipfile.BadZipFile as e:
-                        logger.error(
-                            f"Файл не является ZIP архивом. Размер: {len(download_response.content)} байт")
-                        debug_file = os.path.join(
-                            tempfile.gettempdir(), f"debug_response_{uuid.uuid4()}.bin")
-                        with open(debug_file, 'wb') as f:
-                            f.write(download_response.content)
-                        logger.error(
-                            f"Ответ API сохранен для отладки: {debug_file}")
-                        raise Exception(
-                            f"Файл не является ZIP архивом. Ответ сохранен в {debug_file} для анализа")
-
-                    # Собираем список видео файлов
-                    for root, dirs, files_list in os.walk(extract_dir):
-                        for file in files_list:
-                            if file.endswith(('.mp4', '.avi', '.mov', '.mkv')):
-                                video_files.append(os.path.join(root, file))
-
-                    logger.info(
-                        f"Извлечено {len(video_files)} видео файлов из архива (ожидалось {file_count})")
-
-                    # Удаляем временный zip файл
-                    os.unlink(tmp_zip_path)
-                    logger.debug(f"Временный файл {tmp_zip_path} удален")
+                        error_msg = error_msg or "Неизвестная ошибка"
+                        
+                        # Детальный анализ ошибки GPU
+                        logger.error("=" * 80)
+                        logger.error(f"✗ ОШИБКА ОБРАБОТКИ КОПИИ {i+1}")
+                        logger.error("=" * 80)
+                        logger.error(f"Полное сообщение об ошибке:")
+                        logger.error(f"{error_msg}")
+                        logger.error("=" * 80)
+                        
+                        # Проверяем тип ошибки
+                        is_gpu_error = (
+                            'nvenc' in error_msg.lower() or 
+                            'gpu' in error_msg.lower() or 
+                            'operation not permitted' in error_msg.lower() or
+                            'invalid argument' in error_msg.lower() or
+                            'could not open encoder' in error_msg.lower() or
+                            'encoder' in error_msg.lower()
+                        )
+                        
+                        if is_gpu_error:
+                            logger.error("ДИАГНОСТИКА GPU ОШИБКИ:")
+                            logger.error("=" * 80)
+                            
+                            # Проверяем nvidia-smi
+                            try:
+                                nvidia_check = subprocess.run(
+                                    ['nvidia-smi', '--query-gpu=index,name,driver_version,memory.used,memory.total', '--format=csv'],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=5
+                                )
+                                if nvidia_check.returncode == 0:
+                                    logger.error("nvidia-smi статус:")
+                                    logger.error(nvidia_check.stdout)
+                                else:
+                                    logger.error(f"nvidia-smi недоступен (код: {nvidia_check.returncode})")
+                                    logger.error(f"stderr: {nvidia_check.stderr[:500]}")
+                            except Exception as e:
+                                logger.error(f"Не удалось выполнить nvidia-smi: {str(e)}")
+                            
+                            # Проверяем FFmpeg кодеки
+                            try:
+                                ffmpeg_encoders = subprocess.run(
+                                    ['ffmpeg', '-hide_banner', '-encoders'],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=5
+                                )
+                                if ffmpeg_encoders.returncode == 0:
+                                    if 'h264_nvenc' in ffmpeg_encoders.stdout:
+                                        logger.error("✓ h264_nvenc найден в FFmpeg")
+                                    else:
+                                        logger.error("✗ h264_nvenc НЕ найден в FFmpeg!")
+                                        logger.error("  FFmpeg не скомпилирован с поддержкой NVENC")
+                            except Exception as e:
+                                logger.error(f"Не удалось проверить FFmpeg кодеки: {str(e)}")
+                            
+                            logger.error("=" * 80)
+                            logger.error("ВОЗМОЖНЫЕ ПРИЧИНЫ:")
+                            logger.error("  1. GPU недоступен в Docker (проверьте nvidia-container-runtime)")
+                            logger.error("  2. FFmpeg не скомпилирован с поддержкой GPU")
+                            logger.error("  3. Драйверы GPU не установлены или устарели")
+                            logger.error("  4. GPU занят другим процессом")
+                            logger.error("  5. Недостаточно памяти GPU")
+                            logger.error("=" * 80)
+                        
+                        # Не продолжаем обработку при ошибке GPU - требуем исправления
+                        raise Exception(f"Ошибка GPU при обработке копии {i+1}: {error_msg}")
+                        
+                except Exception as e:
+                    logger.error("=" * 80)
+                    logger.error(f"✗ КРИТИЧЕСКАЯ ОШИБКА ПРИ ОБРАБОТКЕ КОПИИ {i+1}")
+                    logger.error("=" * 80)
+                    logger.error(f"Тип ошибки: {type(e).__name__}")
+                    logger.error(f"Сообщение: {str(e)}")
+                    logger.error("=" * 80)
+                    import traceback
+                    logger.error("Полный traceback:")
+                    logger.error(traceback.format_exc())
+                    logger.error("=" * 80)
+                    raise  # Пробрасываем ошибку дальше, не продолжаем
+            
+            if not video_files:
+                raise Exception("Не удалось обработать ни одной копии видео")
+            
+            logger.info(f"Уникализация завершена. Получено {len(video_files)} видео из {copies} запрошенных")
+            return video_files
 
         except Exception as e:
             logger.error(f"Ошибка уникализации видео: {str(e)}", exc_info=True)
+            # Очищаем временные файлы при ошибке
+            for video_file in video_files:
+                try:
+                    if os.path.exists(video_file):
+                        os.remove(video_file)
+                except:
+                    pass
             raise Exception(f"Ошибка уникализации видео: {str(e)}")
-
-        logger.info(
-            f"Уникализация завершена. Получено {len(video_files)} видео")
-        return video_files
 
     async def get_download_url(self, download_id: str, token: str) -> bytes:
         """
-        Скачивает уникализированное видео по download ID и token
+        Этот метод больше не используется, так как мы работаем локально.
+        Оставлен для обратной совместимости.
         """
-        try:
-            logger.info(f"Скачивание видео: download_id={download_id}")
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                response = await client.get(
-                    f"{self.api_url}?download={download_id}&token={token}"
-                )
-                response.raise_for_status()
-                logger.info(
-                    f"Видео успешно скачано, размер: {len(response.content)} байт")
-                return response.content
-        except Exception as e:
-            logger.error(f"Ошибка скачивания видео: {str(e)}", exc_info=True)
-            raise Exception(f"Ошибка скачивания видео: {str(e)}")
+        logger.warning("get_download_url вызван, но не используется в локальном режиме")
+        raise NotImplementedError("Локальный уникализатор не поддерживает скачивание по URL")
 
 
 uniq_service = UniquizationService()
